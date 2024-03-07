@@ -37,10 +37,7 @@ assignment=`cat conf/assignment.txt`
 if [ $assignment != 'assignment1' ]
 then
 	mkdir -p "$WRITEDIR"
-
-	#The WRITEDIR is in quotes because if the directory path consists of spaces, then variable substitution will consider it as multiple argument.
-	#The quotes signify that the entire string in WRITEDIR is a single string.
-	#This issue can also be resolved by using double square brackets i.e [[ ]] instead of using quotes.
+	
 	if [ -d "$WRITEDIR" ]
 	then
 		echo "$WRITEDIR created"
@@ -48,19 +45,29 @@ then
 		exit 1
 	fi
 fi
-#echo "Removing the old writer utility and compiling as a native application"
-#make clean
-#make
 
-for i in $( seq 1 $NUMFILES)
+# Check if executables are found in PATH
+WRITER_PATH=$(which writer)
+FINDER_PATH=$(which finder.sh)
+
+if [ -z "$WRITER_PATH" ] || [ -z "$FINDER_PATH" ]; then
+    echo "Error: writer or finder.sh not found in PATH."
+    exit 1
+fi
+
+for i in $(seq 1 $NUMFILES)
 do
-	./writer "$WRITEDIR/${username}$i.txt" "$WRITESTR"
+    $WRITER_PATH "$WRITEDIR/${username}$i.txt" "$WRITESTR"
 done
 
-OUTPUTSTRING=$(./finder.sh "$WRITEDIR" "$WRITESTR")
+OUTPUTSTRING=$($FINDER_PATH "$WRITEDIR" "$WRITESTR")
 
 # remove temporary directories
 rm -rf /tmp/aeld-data
+
+# Save the output of the finder command to the result file
+RESULT_FILE="/tmp/assignment4-result.txt"
+echo "$OUTPUTSTRING" > "$RESULT_FILE"
 
 set +e
 echo ${OUTPUTSTRING} | grep "${MATCHSTR}"
