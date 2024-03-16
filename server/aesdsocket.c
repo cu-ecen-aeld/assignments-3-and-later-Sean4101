@@ -1,198 +1,248 @@
-#include <arpa/inet.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <syslog.h>
+#include <stddef.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
-#include <netinet/in.h>
+#include <errno.h>
+#include <syslog.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <arpa/inet.h>
 
-#define DATA_FILE_PATH "/var/tmp/aesdsocketdata"
+#define PORT "9000"
+#define OUTPUT_FILE "/var/tmp/aesdsocketdata"
+#define BUF_SIZE 500
 
-int server_fd;
+static void signal_handler(int signal_number);
+void set_signal_handling();
+int open_socket();
+void recieve_socket_data(int sockfd);
+void return_socket_data(int sockfd);
 
-void sig_handler(int signo) {
-    if (signo == SIGINT || signo == SIGTERM) {
-        syslog(LOG_INFO, "Caught signal, exiting");
-        close(server_fd);
-        closelog();
-        remove(DATA_FILE_PATH);
-        exit(0);
+
+bool caught_a_signal = false;
+bool caught_sigint = false;
+bool caught_sigterm = false;
+
+bool should_continue = true;
+
+
+
+static void signal_handler(int signal_number) {
+    caught_a_signal = true;
+    should_continue = false;
+    if (signal_number == SIGINT) {
+        caught_sigint = true;
+    }
+    if (signal_number == SIGTERM) {
+        caught_sigterm = true;
     }
 }
 
-int main(int argc, char* argv[]) {
-
-    // Daemon mode
-    int is_daemon = 0;
-    if ((argc > 1) && (strcmp(argv[1], "-d") == 0)) {
-        is_daemon = 1;
+void set_signal_handling() {
+    struct sigaction new_action;
+    memset(&new_action, 0, sizeof(struct sigaction));
+    new_action.sa_handler = signal_handler; 
+    int sa = sigaction(SIGINT, &new_action, NULL);
+    if (sa != 0) {
+        syslog(LOG_ERR, "Failed to register for SIGINT. Error: %d", sa);
+        exit(-1);
+    }
+    sa = sigaction(SIGTERM, &new_action, NULL);
+    if (sa != 0) {
+        syslog(LOG_ERR, "Failed to register for SIGTERM. Error: %d", sa);
+        exit(-1);
     }
 
-    openlog(NULL, LOG_PID|LOG_NDELAY, LOG_USER);
-    if (!is_daemon) {
-        syslog(LOG_INFO, "Starting aesdsocket server");
-    }
-    else {
-        syslog(LOG_INFO, "Starting aesdsocket server in daemon mode");
-    }
+    syslog(LOG_INFO, "Signal Handling set up complete.");
+}
 
-    // Register signal handler
-    if (signal(SIGINT, sig_handler) == SIG_ERR) {
-        syslog(LOG_ERR, "Cannot catch SIGINT");
-        syslog(LOG_ERR, "Cannot catch SIGINT");
-        closelog();
-        return 1;
-    }
-
-    if (signal(SIGTERM, sig_handler) == SIG_ERR) {
-        syslog(LOG_ERR, "Cannot catch SIGTERM");
-        closelog();
-        return 1;
-    }
-
-    // Get address info
+int open_socket() {
     struct addrinfo hints;
-    struct addrinfo *result;
-    struct sockaddr_in client_addr;
-    socklen_t client_addr_len;
-
-    memset(&hints, 0, sizeof(struct addrinfo));
+    struct addrinfo *serverinfo;
+    memset(&hints, 0, sizeof(hints));
 
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
+    hints.ai_protocol = 0;
+    hints.ai_addr = NULL;
 
-    int s = getaddrinfo(NULL, "9000", &hints, &result);
-    if (s != 0) {
-        syslog(LOG_ERR, "getaddrinfo: %s", gai_strerror(s));
-        freeaddrinfo(result);
-        closelog();
-        return 1;
+    int r = getaddrinfo(NULL, PORT, &hints, &serverinfo);
+    if (r != 0) {
+        syslog(LOG_ERR, "getaddrinfo encountered an error: %d", r);
+        exit(-1);
     }
 
-    // Create socket
-    server_fd = socket(result->ai_family, result->ai_socktype, 0);
-    if (server_fd == -1) {
-        syslog(LOG_ERR, "Error creating socket");
-        freeaddrinfo(result);
-        closelog();
-        close(server_fd);
-        return 1;
+    int sfd = socket(serverinfo->ai_family, serverinfo->ai_socktype, serverinfo->ai_protocol);
+    if (sfd == -1) {
+        syslog(LOG_ERR, "Socket could not be created. Error: %d", errno);
+        exit(-1);
+    }
+    const int opt_yes = 1;
+    r = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt_yes, sizeof(opt_yes));
+    if (r == -1) {
+        syslog(LOG_ERR, "Socket options could not be set. Error: %d", errno);
+        exit(-1);
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) {
-        syslog(LOG_ERR, "Error setting socket options");
-        freeaddrinfo(result);
-        closelog();
-        close(server_fd);
-        return 1;
+    r = bind(sfd, serverinfo->ai_addr, serverinfo->ai_addrlen);
+    if (r != 0) {
+        syslog(LOG_ERR, "Socket failed to bind. Error: %d", errno);
+        exit(-1);
     }
+    freeaddrinfo(serverinfo);
+    return sfd;
+}
 
-    // Daemon mode - fork
-    if (is_daemon) {
-        pid_t pid = fork();
-
-        if (pid == -1) {
-            syslog(LOG_ERR, "Error forking");
-            freeaddrinfo(result);
-            closelog();
-            close(server_fd);
-            return 1;
-        }
-        else if (pid > 0) {
-            closelog();
-            close(server_fd);
-            exit(0);
-        }
-    }
-
-    // Bind socket
-    if (bind(server_fd, result->ai_addr, result->ai_addrlen) == -1) {
-        syslog(LOG_ERR, "Error binding socket");
-        freeaddrinfo(result);
-        closelog();
-        close(server_fd);
-        return 1;
-    }
-    freeaddrinfo(result);
-
-    // Listen
-    if (listen(server_fd, 10) == -1) {
-        syslog(LOG_ERR, "Error listening on socket");
-        closelog();
-        close(server_fd);
-        return 1;
-    }
-
-    int new_fd;
-    char *ip_addr;
-    FILE *data_file;
-    while (1) {
-        client_addr_len = sizeof(client_addr);
-        new_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
-        if (new_fd == -1) {
-            syslog(LOG_ERR, "Error accepting connection");
-            closelog();
-            close(server_fd);
-            return 1;
-        }
-        
-        ip_addr = inet_ntoa(client_addr.sin_addr);
-        syslog(LOG_INFO, "Connection from %s", ip_addr);
-
-        // Read data from client
-        char buffer[1024];
-        if ((data_file = fopen(DATA_FILE_PATH, "a")) == NULL) {
-            syslog(LOG_ERR, "Error opening file");
-            closelog();
-            close(server_fd);
-            return 1;
-        }
-
-        while (1) {
-            int bytes_read = recv(new_fd, buffer, sizeof(buffer), 0);
-            if (bytes_read == -1) {
-                syslog(LOG_ERR, "Error reading from socket");
-                break;
-            }
-            fwrite(buffer, 1, bytes_read, data_file);
-
-            if (memchr(buffer, '\n', bytes_read) != NULL) { // End of message indicated by newline
-                break;
-            }
-        }
-        fclose(data_file);
-
-        // Send response to client
-
-        if ((data_file = fopen(DATA_FILE_PATH, "r")) == NULL) {
-            syslog(LOG_ERR, "Error opening file");
-            closelog();
-            close(server_fd);
-            return 1;
-        }
-
-        while (1) { // Send all the data in the file to the client
-            int bytes_read = fread(buffer, 1, sizeof(buffer), data_file);
-            if (bytes_read == 0) { // EOF
-                break;
-            }
-            if (send(new_fd, buffer, bytes_read, 0) == -1) {
-                syslog(LOG_ERR, "Error sending to socket");
-                break;
-            }
-        }
-    }
-
-    closelog();
-    syslog(LOG_USER, "losed connection from %s", ip_addr);
-    close(server_fd);
-    close(new_fd);
-    remove(DATA_FILE_PATH);
+void recieve_socket_data(int sockfd) {
+    printf("socket id: %d\n", sockfd);
+    char buf[BUF_SIZE+1];    
+    ssize_t nrecv;
+    ssize_t nwrit;
+    char *ptr_null;
     
-    return 0;
+    int output_file = open(OUTPUT_FILE, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (output_file < 0) {
+        syslog(LOG_ERR, "Could not open file. Error: %d", errno);
+        should_continue = false;
+	return;
+    }
+
+    do {
+        nrecv = recv(sockfd, buf, BUF_SIZE, 0);
+	buf[nrecv] = 0;
+	printf("nrecv: %ld\n", nrecv);
+	if (nrecv < 0) {
+            syslog(LOG_ERR, "Could not recieve data. Error: %d", errno);
+            should_continue = false;
+            return;
+        }
+
+        nwrit = write(output_file, buf, nrecv);
+        if (nwrit < 0) {
+            should_continue = false;
+            return;
+        }
+	ptr_null = strchr(buf, '\n');
+    } while (ptr_null == NULL);
+
+    close(output_file);
+    return;
+}
+
+void return_socket_data(int sockfd) {
+    char buf[BUF_SIZE];    
+    ssize_t nread;
+    ssize_t nsend;
+
+    int output_file = open(OUTPUT_FILE, O_RDONLY, 0666);
+    if (output_file < 0) {
+        syslog(LOG_ERR, "Could not open file. Error: %d", errno);
+        should_continue = false;
+	return;
+    }
+
+    do {    
+        nread = read(output_file, buf, BUF_SIZE);
+	if (nread < 0) {
+            should_continue = false;
+	    return;
+        }
+	nsend = send(sockfd, buf, nread, 0);
+        if (nsend < 0) {
+            syslog(LOG_ERR, "Could not send data. Error: %d", errno);
+	    should_continue = false;
+            return;
+        }
+    } while (nsend == BUF_SIZE);
+
+    close(output_file);
+    return;
+}
+
+void graceful_socket_shutdown(int sockfd) { 
+    int r = shutdown(sockfd,SHUT_RDWR);
+    if (r != 0) {
+        syslog(LOG_ERR, "Socket shutdown failed. Error: %d", errno);
+    }
+    r = close(sockfd);
+    if (r != 0) {
+        syslog(LOG_ERR, "Socket close failed. Error: %d", errno);
+    }
+    remove(OUTPUT_FILE);
+}
+
+/* 
+ * --------- MAIN --------- 
+ */
+int main (int argc, char*argv[]) {
+
+    openlog(NULL, 0, LOG_USER);    
+
+    set_signal_handling();
+
+    char buf[BUF_SIZE];
+    size_t nread;
+    
+    int sfd = open_socket();
+
+    if (argc >= 2 && !strcmp(argv[1], "-d")) {
+	int r = fork();
+	if (r < 0) {
+            syslog(LOG_ERR, "Error creating deamon fork: %d", errno);
+	    exit(-1);
+	} else if (r > 0) {
+	    exit(0);
+	}
+    }
+    
+    do {	
+        // listen for and accept connection
+	int r = listen(sfd, 10);
+	if (r != 0) {
+	    syslog(LOG_ERR, "Error while listening on socket: %d", errno);
+	    graceful_socket_shutdown(sfd);
+	    exit(-1);
+	}
+
+        struct sockaddr peer;
+        socklen_t peer_addr_size = sizeof(peer);
+        memset(&peer, 0, sizeof(peer));   //make sure struct is empty
+
+
+	int pfd = accept(sfd, &peer, &peer_addr_size); 
+	if (pfd == -1) {
+	    if (errno == 4) {
+                break;
+	    }
+	    syslog(LOG_ERR, "Error while accepting connection: %d", errno);
+	    graceful_socket_shutdown(sfd);
+	    exit(-1);
+	}
+	char client[INET6_ADDRSTRLEN];
+	inet_ntop(peer.sa_family, peer.sa_data, client, sizeof(client));
+	syslog(LOG_INFO, "Accepted connection from %s", client);
+
+	recieve_socket_data(pfd);
+	if (!should_continue) {
+		break;
+	}
+	return_socket_data(pfd);
+        syslog(LOG_INFO, "Closing connection at %s", client);
+        shutdown(pfd,SHUT_RDWR);
+        close(pfd);   
+    } while(!caught_a_signal && should_continue);
+
+    if (caught_sigint || caught_sigterm) {
+	syslog(LOG_INFO, "Caught signal, exiting.");
+        graceful_socket_shutdown(sfd);
+        remove(OUTPUT_FILE);
+	
+    }
+    exit(0);
 }
