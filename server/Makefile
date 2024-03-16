@@ -1,10 +1,10 @@
-ifeq ($(CROSS_COMPILE),)
-    CC := gcc  # Default compiler is gcc
-else
-    CC := $(CROSS_COMPILE)gcc
-endif
+CC = $(CROSS_COMPILER)gcc
+CFLAGS += -g -Wall -Werror
 
 all: aesdsocket
 
-clean:
-	rm -f aesdsocket *.o
+aesdsocket: aesdsocket.c
+	$(CC) $(CFLAGS) -o aesdsocket aesdsocket.c
+    
+clean: 
+	rm -rf *.o *stackdump aesdsocket

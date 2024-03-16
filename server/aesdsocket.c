@@ -43,6 +43,7 @@ int main(int argc, char* argv[]) {
     // Register signal handler
     if (signal(SIGINT, sig_handler) == SIG_ERR) {
         syslog(LOG_ERR, "Cannot catch SIGINT");
+        syslog(LOG_ERR, "Cannot catch SIGINT");
         closelog();
         return 1;
     }
@@ -167,7 +168,6 @@ int main(int argc, char* argv[]) {
         fclose(data_file);
 
         // Send response to client
-        char response[] = "ACK\n";
 
         if ((data_file = fopen(DATA_FILE_PATH, "r")) == NULL) {
             syslog(LOG_ERR, "Error opening file");
