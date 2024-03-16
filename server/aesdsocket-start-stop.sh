@@ -3,7 +3,7 @@
 case "$1" in
   start)
     echo "Starting aesdsocket..."
-    /usr/bin/aesdsocket &
+    $(which aesdsocket) &
     ;;
   stop)
     echo "Stopping aesdsocket..."
