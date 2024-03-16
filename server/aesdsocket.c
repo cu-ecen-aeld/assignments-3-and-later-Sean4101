@@ -185,9 +185,6 @@ int main (int argc, char*argv[]) {
     openlog(NULL, 0, LOG_USER);    
 
     set_signal_handling();
-
-    char buf[BUF_SIZE];
-    size_t nread;
     
     int sfd = open_socket();
 
